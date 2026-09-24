@@ -10,7 +10,8 @@ import random
 import hashlib
 import os
 import sys
-from datetime import datetime
+import argparse
+from datetime import datetime, timedelta
 
 import requests
 
@@ -18,10 +19,20 @@ import requests
 # CONFIG
 # ============================================================
 
-COOKIES_FILE = "cookies.json"        # Export dari Cookie-Editor
-TARGET_USERNAME = ""                  # Username temen target
-INTERVAL_HOURS = 24                  # Kirim sekali sehari
-MESSAGE_TEMPLATE = ""                 # Pesanopsional (kosong = cuma link)
+CONFIG_FILE = "config.json"
+COOKIES_FILE = "cookies.json"
+
+# ============================================================
+# CONFIG LOADER
+# ============================================================
+
+def load_config() -> dict:
+    """Load config dari file JSON."""
+    if not os.path.exists(CONFIG_FILE):
+        print(f"[ERROR] File config tidak ditemukan: {CONFIG_FILE}")
+        sys.exit(1)
+    with open(CONFIG_FILE) as f:
+        return json.load(f)
 
 # ============================================================
 # TIKTOK API ENDPOINTS (internal)
@@ -324,11 +335,41 @@ def send_video_share(s: requests.Session, conversation_id: str, video_url: str) 
 # MAIN
 # ============================================================
 
+def wait_until(target_time: str, offset_minutes: int = 0):
+    """Tunggu sampai jam target."""
+    now = datetime.now()
+    hour, minute = map(int, target_time.split(":"))
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    
+    # Tambah offset random biar nggak predicted
+    if offset_minutes > 0:
+        offset = random.randint(-offset_minutes, offset_minutes)
+        target += timedelta(minutes=offset)
+    
+    # Kalau target udah lewat hari ini, tunggu besok
+    if target <= now:
+        target += timedelta(days=1)
+    
+    wait_seconds = (target - now).total_seconds()
+    print(f"    Menunggu sampai {target.strftime('%H:%M')} (detik: {int(wait_seconds)})...")
+    time.sleep(wait_seconds)
+
+
 def main():
+    parser = argparse.ArgumentParser(description="TikTok DM Streak Automation")
+    parser.add_argument("--loop", action="store_true", help="Jalankan auto loop")
+    parser.add_argument("--once", action="store_true", help="Jalankan sekali saja")
+    args = parser.parse_args()
+    
     print("=" * 50)
     print("  TikTok DM Streak Automation 🔥")
     print("=" * 50)
     print()
+    
+    # Load config
+    config = load_config()
+    send_time = config.get("send_time", "09:00")
+    offset = config.get("random_offset_minutes", 30)
     
     # Load cookies
     print("[1] Loading cookies...")
@@ -339,10 +380,10 @@ def main():
     s = get_session(cookies)
     
     # Get user info
-    print(f"\n[2] Mencari user: {TARGET_USERNAME}...")
-    user = get_user_info(s, TARGET_USERNAME)
+    print(f"\n[2] Mencari user: {config['target_username']}...")
+    user = get_user_info(s, config["target_username"])
     if not user:
-        print(f"[ERROR] User '{TARGET_USERNAME}' tidak ditemukan")
+        print(f"[ERROR] User '{config['target_username']}' tidak ditemukan")
         sys.exit(1)
     print(f"    User ID: {user['user_id']}")
     print(f"    Nickname: {user['nickname']}")
@@ -355,44 +396,68 @@ def main():
         sys.exit(1)
     print(f"    Conversation ID: {conv_id}")
     
-    # Get trending videos
-    print(f"\n[4] Mencari trending video...")
-    videos = get_trending_videos(s, count=20)
-    if not videos:
-        print("[WARN] Tidak dapat trending video, coba ambil random")
-        # Fallback: kirim link random
-        video_url = "https://www.tiktok.com/trending"
+    def send_once():
+        """Eksekusi sekali kirim."""
+        nonlocal s
+        
+        # Refresh session (cookies mungkin expired)
+        s = get_session(cookies)
+        
+        # Get trending videos
+        print(f"\n[4] Mencari trending video...")
+        videos = get_trending_videos(s, count=20)
+        if not videos:
+            print("[WARN] Tidak dapat trending video, kirim link trending")
+            video_url = "https://www.tiktok.com/trending"
+        else:
+            video = random.choice(videos)
+            video_url = video["url"]
+            print(f"    Video: {video['desc'][:50]}...")
+            print(f"    URL: {video_url}")
+        
+        # Kirim DM
+        print(f"\n[5] Mengirim DM...")
+        if config.get("message_template"):
+            success = send_dm(s, conv_id, f"{config['message_template']}\n\n{video_url}")
+        else:
+            success = send_video_share(s, conv_id, video_url)
+        
+        if success:
+            print("    ✅ Berhasil dikirim!")
+        else:
+            print("    ❌ Gagal mengirim")
+        
+        # Log
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "target": config["target_username"],
+            "video_url": video_url,
+            "success": success,
+        }
+        with open("send_log.json", "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+        
+        print(f"\n[6] Log tersimpan ke send_log.json")
+        print("=" * 50)
+    
+    if args.loop:
+        # Mode loop: tunggu jam target, kirim, ulang
+        print(f"\n[LOOP] Mode auto-loop aktif")
+        print(f"    Send time: {send_time}")
+        print(f"    Random offset: ±{offset} menit")
+        print()
+        
+        while True:
+            wait_until(send_time, offset)
+            try:
+                send_once()
+            except Exception as e:
+                print(f"[ERROR] {e}")
+            print(f"\nMenunggu sampai besok...")
+            time.sleep(60)
     else:
-        video = random.choice(videos)
-        video_url = video["url"]
-        print(f"    Video dipilih: {video['desc'][:50]}...")
-        print(f"    URL: {video_url}")
-    
-    # Kirim DM
-    print(f"\n[5] Mengirim DM...")
-    if MESSAGE_TEMPLATE:
-        success = send_dm(s, conv_id, f"{MESSAGE_TEMPLATE}\n\n{video_url}")
-    else:
-        success = send_video_share(s, conv_id, video_url)
-    
-    if success:
-        print("    ✅ Berhasil dikirim!")
-    else:
-        print("    ❌ Gagal mengirim")
-    
-    # Log
-    log_entry = {
-        "timestamp": datetime.now().isoformat(),
-        "target": TARGET_USERNAME,
-        "video_url": video_url,
-        "success": success,
-    }
-    
-    with open("send_log.json", "a") as f:
-        f.write(json.dumps(log_entry) + "\n")
-    
-    print(f"\n[6] Log tersimpan ke send_log.json")
-    print("=" * 50)
+        # Mode sekali
+        send_once()
 
 
 if __name__ == "__main__":

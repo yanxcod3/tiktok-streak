@@ -1,5 +1,6 @@
 {
     "target_username": "",
-    "interval_hours": 24,
-    "message_template": ""
+    "send_time": "09:00",
+    "message_template": "",
+    "random_offset_minutes": 30
 }
