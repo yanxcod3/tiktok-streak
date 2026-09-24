@@ -1,471 +1,274 @@
 #!/usr/bin/env python3
 """
-TikTok DM Streak Automation
-Kirim trending video ke temen via DM setiap hari buat maintain streak 🔥
+TikTok DM Streak Automation — Playwright Edition
+Auto kirim video FYP ke temen via DM buat maintain streak 🔥
 """
 
 import json
 import time
 import random
-import hashlib
 import os
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
-import requests
+from playwright.sync_api import sync_playwright
 
 # ============================================================
 # CONFIG
 # ============================================================
 
 CONFIG_FILE = "config.json"
-COOKIES_FILE = "cookies.json"
+USER_DATA_DIR = Path(__file__).parent / "browser_data"
+LOG_FILE = "send_log.json"
 
 # ============================================================
 # CONFIG LOADER
 # ============================================================
 
 def load_config() -> dict:
-    """Load config dari file JSON."""
     if not os.path.exists(CONFIG_FILE):
-        print(f"[ERROR] File config tidak ditemukan: {CONFIG_FILE}")
+        print(f"[ERROR] Config tidak ditemukan: {CONFIG_FILE}")
         sys.exit(1)
     with open(CONFIG_FILE) as f:
         return json.load(f)
 
 # ============================================================
-# TIKTOK API ENDPOINTS (internal)
+# BROWSER SESSION
 # ============================================================
 
-TIKTOK_BASE = "https://www.tiktok.com"
+def get_browser(playwright):
+    """Buka Chrome dengan user data (session tersimpan)."""
+    USER_DATA_DIR.mkdir(exist_ok=True)
+    browser = playwright.chromium.launch_persistent_context(
+        user_data_dir=str(USER_DATA_DIR),
+        headless=False,  # Tampil biar bisa login manual pertama kali
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+        ],
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        viewport={"width": 1280, "height": 800},
+    )
+    return browser
 
-# Headers umum
-BASE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.tiktok.com/",
-    "Origin": "https://www.tiktok.com",
-}
-
-
-# ============================================================
-# COOKIE LOADER
-# ============================================================
-
-def load_cookies(path: str) -> dict:
-    """Load cookies dari file JSON (Cookie-Editor format)."""
-    if not os.path.exists(path):
-        print(f"[ERROR] File cookies tidak ditemukan: {path}")
-        print("Export cookies dari browser pakai Cookie-Editor → JSON format")
-        sys.exit(1)
+def ensure_logged_in(page):
+    """Cek apakah sudah login, kalau belum minta login manual."""
+    page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=30000)
+    time.sleep(3)
     
-    with open(path) as f:
-        raw = json.load(f)
+    # Cek login status — kalau ada tombol login, berarti belum login
+    login_btn = page.query_selector('button[data-e2e="login-button"]')
+    if login_btn:
+        print("\n" + "=" * 50)
+        print("  ⚠️  BELUM LOGIN TIKTOK")
+        print("  Silakan login manual di browser yang terbuka.")
+        print("  Setelah login, tekan ENTER di terminal ini.")
+        print("=" * 50)
+        input("\nTekan ENTER setelah login selesai...")
+        page.reload(wait_until="domcontentloaded")
+        time.sleep(2)
     
-    # Cookie-Editor exports as list of {name, value, domain, ...}
-    if isinstance(raw, list):
-        cookies = {}
-        for c in raw:
-            name = c.get("name", "")
-            value = c.get("value", "")
-            if name and value:
-                cookies[name] = value
-        return cookies
-    
-    # Jika sudah format dict
-    if isinstance(raw, dict):
-        return raw
-    
-    print("[ERROR] Format cookies tidak dikenali")
-    sys.exit(1)
-
-
-def get_session(cookies: dict) -> requests.Session:
-    """Buat session requests dengan cookies TikTok."""
-    s = requests.Session()
-    s.headers.update(BASE_HEADERS)
-    for name, value in cookies.items():
-        s.cookies.set(name, value, domain=".tiktok.com")
-    return s
-
-
-# ============================================================
-# GET CSRF TOKEN
-# ============================================================
-
-def get_csrf_token(s: requests.Session) -> str:
-    """Ambil CSRF token dari cookies atau halaman TikTok."""
-    # Coba dari cookies langsung
-    csrf = s.cookies.get("tt_csrf_token") or s.cookies.get("csrf_token") or s.cookies.get("msToken")
-    if csrf:
-        return csrf
-    
-    # Coba dari halaman
-    try:
-        res = s.get(f"{TIKTOK_BASE}/", timeout=15)
-        # Cari di response
-        for line in res.text.split("\n"):
-            if "csrfToken" in line or "csrf_token" in line:
-                # Extract value
-                import re
-                match = re.search(r'"csrfToken":\s*"([^"]+)"', line)
-                if match:
-                    return match.group(1)
-                match = re.search(r'"csrf_token":\s*"([^"]+)"', line)
-                if match:
-                    return match.group(1)
-    except Exception:
-        pass
-    
-    return ""
-
-
-# ============================================================
-# GET USER INFO (resolve username → user_id)
-# ============================================================
-
-def get_user_info(s: requests.Session, username: str) -> dict | None:
-    """Ambil info user dari username."""
-    try:
-        res = s.get(
-            f"{TIKTOK_BASE}/api/user/detail/",
-            params={"uniqueId": username},
-            timeout=15,
-        )
-        data = res.json()
-        if data.get("statusCode") == 0:
-            user = data.get("userInfo", {})
-            return {
-                "user_id": user.get("user", {}).get("id", ""),
-                "sec_uid": user.get("user", {}).get("secUid", ""),
-                "unique_id": user.get("user", {}).get("uniqueId", ""),
-                "nickname": user.get("user", {}).get("nickname", ""),
-            }
-    except Exception as e:
-        print(f"[ERROR] Gagal ambil info user: {e}")
-    return None
-
-
-# ============================================================
-# GET CONVERSATION ID (buat DM)
-# ============================================================
-
-def get_conversation_id(s: requests.Session, user_id: str) -> str | None:
-    """Ambil conversation_id untuk DM ke user tertentu."""
-    try:
-        # Coba list conversations dulu
-        res = s.get(
-            f"{TIKTOK_BASE}/api/dm/conversation/list/",
-            params={"count": 50},
-            timeout=15,
-        )
-        data = res.json()
-        if data.get("statusCode") == 0:
-            for conv in data.get("conversations", []):
-                participants = conv.get("participants", [])
-                for p in participants:
-                    if str(p.get("user_id", "")) == str(user_id):
-                        return conv.get("conversation_id", "")
-        
-        # Jika nggak ketemu, initiate chat baru
-        res = s.post(
-            f"{TIKTOK_BASE}/api/dm/conversation/create/",
-            json={"user_id": user_id},
-            timeout=15,
-        )
-        data = res.json()
-        if data.get("statusCode") == 0:
-            return data.get("conversation_id", "")
-            
-    except Exception as e:
-        print(f"[ERROR] Gagal ambil conversation_id: {e}")
-    return None
-
-
-# ============================================================
-# GET FYP VIDEOS (personalized dari akun sendiri)
-# ============================================================
-
-def get_fyp_videos(s: requests.Session, count: int = 20) -> list[dict]:
-    """Ambil video FYP personal (berdasarkan algoritma akun sendiri)."""
-    videos = []
-    
-    # Method 1: FYP personalized
-    try:
-        res = s.get(
-            f"{TIKTOK_BASE}/api/recommend/item_list/",
-            params={
-                "count": count,
-                "from": "tab_fetch",
-                "guide_id": "",
-                "is_non_personalized": "0",
-            },
-            timeout=15,
-        )
-        data = res.json()
-        if data.get("statusCode") == 0:
-            for item in data.get("itemList", []):
-                author = item.get("author", {})
-                videos.append({
-                    "id": item.get("id", ""),
-                    "desc": item.get("desc", ""),
-                    "author": author.get("uniqueId", ""),
-                    "url": f"https://www.tiktok.com/@{author.get('uniqueId', '')}/video/{item.get('id', '')}",
-                })
-    except Exception:
-        pass
-    
-    # Method 2: Homefeed (personalized FYP)
-    if not videos:
-        try:
-            res = s.get(
-                f"{TIKTOK_BASE}/api/home/feed/",
-                params={"count": count},
-                timeout=15,
-            )
-            data = res.json()
-            if data.get("statusCode") == 0:
-                for item in data.get("itemList", []):
-                    author = item.get("author", {})
-                    videos.append({
-                        "id": item.get("id", ""),
-                        "desc": item.get("desc", ""),
-                        "author": author.get("uniqueId", ""),
-                        "url": f"https://www.tiktok.com/@{author.get('uniqueId', '')}/video/{item.get('id', '')}",
-                    })
-        except Exception:
-            pass
-    
-    # Method 3: Discover random
-    if not videos:
-        try:
-            res = s.get(
-                f"{TIKTOK_BASE}/api/discover/item/",
-                params={"count": count},
-                timeout=15,
-            )
-            data = res.json()
-            if data.get("statusCode") == 0:
-                for item in data.get("data", []):
-                    vid = item.get("aweme", item)
-                    author = vid.get("author", {})
-                    videos.append({
-                        "id": vid.get("id", ""),
-                        "desc": vid.get("desc", ""),
-                        "author": author.get("unique_id", ""),
-                        "url": f"https://www.tiktok.com/@{author.get('unique_id', '')}/video/{vid.get('id', '')}",
-                    })
-        except Exception:
-            pass
-    
-    # Method 4: Generic trending (fallback)
-    if not videos:
-        try:
-            res = s.get(
-                f"{TIKTOK_BASE}/api/trending/item_list/",
-                params={"count": count, "cursor": 0},
-                timeout=15,
-            )
-            data = res.json()
-            if data.get("statusCode") == 0:
-                for item in data.get("itemList", []):
-                    author = item.get("author", {})
-                    videos.append({
-                        "id": item.get("id", ""),
-                        "desc": item.get("desc", ""),
-                        "author": author.get("uniqueId", ""),
-                        "url": f"https://www.tiktok.com/@{author.get('uniqueId', '')}/video/{item.get('id', '')}",
-                    })
-        except Exception:
-            pass
-    
-    return videos
-
-
-# ============================================================
-# SEND DM
-# ============================================================
-
-def send_dm(s: requests.Session, conversation_id: str, text: str) -> bool:
-    """Kirim pesan DM via TikTok."""
-    try:
-        csrf = get_csrf_token(s)
-        headers = {
-            "X-CSRFToken": csrf,
-            "Content-Type": "application/json",
-        }
-        
-        payload = {
-            "conversation_id": conversation_id,
-            "content": text,
-            "item_type": 0,  # 0 = text, 3 = share video
-        }
-        
-        res = s.post(
-            f"{TIKTOK_BASE}/api/dm/send/",
-            json=payload,
-            headers=headers,
-            timeout=15,
-        )
-        data = res.json()
-        
-        if data.get("statusCode") == 0:
-            return True
-        else:
-            print(f"[WARN] Send gagal: {data.get('status_msg', 'unknown error')}")
-            return False
-            
-    except Exception as e:
-        print(f"[ERROR] Send DM gagal: {e}")
+    # Verifikasi login
+    avatar = page.query_selector('[data-e2e="nav-login-avatar"]') or page.query_selector('img[alt*="avatar"]')
+    if avatar:
+        print("✅ Login berhasil!")
+        return True
+    else:
+        print("⚠️  Login mungkin belum berhasil, coba lagi.")
         return False
 
+# ============================================================
+# GET FYP VIDEO
+# ============================================================
 
-def send_video_share(s: requests.Session, conversation_id: str, video_url: str) -> bool:
-    """Share video ke DM."""
+def get_fyp_video(page) -> str | None:
+    """Ambil random video dari FYP."""
+    page.goto("https://www.tiktok.com/foryou", wait_until="domcontentloaded", timeout=30000)
+    time.sleep(3)
+    
+    # Scroll sekali biar load beberapa video
+    for _ in range(random.randint(2, 5)):
+        page.mouse.wheel(0, random.randint(300, 800))
+        time.sleep(random.uniform(0.5, 1.5))
+    
+    # Ambil semua video link
+    video_links = page.query_selector_all('a[href*="/video/"]')
+    
+    if not video_links:
+        print("[WARN] Tidak ada video di FYP")
+        return None
+    
+    # Pilih random
+    chosen = random.choice(video_links)
+    href = chosen.get_attribute("href")
+    
+    if href:
+        if href.startswith("/"):
+            return f"https://www.tiktok.com{href}"
+        return href
+    return None
+
+# ============================================================
+# SEND DM VIA SHARE
+# ============================================================
+
+def share_video_to_dm(page, video_url: str, target_username: str) -> bool:
+    """Share video ke temen via DM TikTok."""
     try:
-        csrf = get_csrf_token(s)
-        headers = {
-            "X-CSRFToken": csrf,
-            "Content-Type": "application/json",
-        }
+        # Buka video
+        page.goto(video_url, wait_until="domcontentloaded", timeout=30000)
+        time.sleep(3)
         
-        payload = {
-            "conversation_id": conversation_id,
-            "content": video_url,
-            "item_type": 3,  # 3 = share video/link
-        }
+        # Klik tombol Share
+        share_btn = page.query_selector('[data-e2e="share-button"]') or page.query_selector('button[aria-label*="Share"]')
+        if not share_btn:
+            # Coba cari share icon
+            share_btn = page.query_selector('[data-e2e="share-btn"]')
         
-        res = s.post(
-            f"{TIKTOK_BASE}/api/dm/send/",
-            json=payload,
-            headers=headers,
-            timeout=15,
-        )
-        data = res.json()
+        if not share_btn:
+            print("[WARN] Tombol share tidak ditemukan")
+            return False
         
-        if data.get("statusCode") == 0:
-            return True
-        else:
-            # Fallback: kirim sebagai text
-            return send_dm(s, conversation_id, f"Check this out! {video_url}")
+        share_btn.click()
+        time.sleep(2)
+        
+        # Klik "Send to friends" atau "Message"
+        send_to_friend = page.query_selector('div[data-e2e="share-to-friends"]')
+        if not send_to_friend:
+            send_to_friend = page.query_selector('text="Send to friends"')
+        if not send_to_friend:
+            send_to_friend = page.query_selector('text="Message"')
+        
+        if send_to_friend:
+            send_to_friend.click()
+            time.sleep(2)
+        
+        # Cari target di search
+        search_input = page.query_selector('input[placeholder*="Search"]') or page.query_selector('input[data-e2e="search-user-input"]')
+        if search_input:
+            search_input.fill(target_username)
+            time.sleep(2)
             
+            # Klik hasil pencarian pertama
+            first_result = page.query_selector(f'div[data-e2e="search-user-item"]') or page.query_selector(f'span:has-text("{target_username}")')
+            if first_result:
+                first_result.click()
+                time.sleep(1)
+                
+                # Klik tombol Send
+                send_btn = page.query_selector('button[data-e2e="send-btn"]') or page.query_selector('button:has-text("Send")')
+                if send_btn:
+                    send_btn.click()
+                    time.sleep(2)
+                    print(f"    ✅ Video dikirim ke @{target_username}!")
+                    return True
+        
+        print("[WARN] Gagal kirim DM via share")
+        # Tutup share modal
+        page.keyboard.press("Escape")
+        return False
+        
     except Exception as e:
-        # Fallback
-        return send_dm(s, conversation_id, f"Check this out! {video_url}")
+        print(f"[ERROR] Share gagal: {e}")
+        try:
+            page.keyboard.press("Escape")
+        except:
+            pass
+        return False
 
+# ============================================================
+# LOG
+# ============================================================
+
+def log_send(target: str, video_url: str, success: bool):
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "target": target,
+        "video_url": video_url,
+        "success": success,
+    }
+    with open(LOG_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+# ============================================================
+# WAIT UNTIL TIME
+# ============================================================
+
+def wait_until(target_time: str, offset_minutes: int = 0):
+    now = datetime.now()
+    hour, minute = map(int, target_time.split(":"))
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    
+    if offset_minutes > 0:
+        offset = random.randint(-offset_minutes, offset_minutes)
+        target += timedelta(minutes=offset)
+    
+    if target <= now:
+        target += timedelta(days=1)
+    
+    wait_seconds = (target - now).total_seconds()
+    print(f"    Menunggu sampai {target.strftime('%H:%M')} ({int(wait_seconds // 3600)}j {int((wait_seconds % 3600) // 60)}m)...")
+    time.sleep(wait_seconds)
 
 # ============================================================
 # MAIN
 # ============================================================
 
-def wait_until(target_time: str, offset_minutes: int = 0):
-    """Tunggu sampai jam target."""
-    now = datetime.now()
-    hour, minute = map(int, target_time.split(":"))
-    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    
-    # Tambah offset random biar nggak predicted
-    if offset_minutes > 0:
-        offset = random.randint(-offset_minutes, offset_minutes)
-        target += timedelta(minutes=offset)
-    
-    # Kalau target udah lewat hari ini, tunggu besok
-    if target <= now:
-        target += timedelta(days=1)
-    
-    wait_seconds = (target - now).total_seconds()
-    print(f"    Menunggu sampai {target.strftime('%H:%M')} (detik: {int(wait_seconds)})...")
-    time.sleep(wait_seconds)
-
-
 def main():
-    print("=" * 50)
-    print("  TikTok DM Streak Automation 🔥")
-    print("=" * 50)
-    print()
-    
-    # Load config
     config = load_config()
+    target = config["target_username"]
     send_time = config.get("send_time", "09:00")
     offset = config.get("random_offset_minutes", 30)
     
-    # Load cookies
-    print("[1] Loading cookies...")
-    cookies = load_cookies(COOKIES_FILE)
-    print(f"    Loaded {len(cookies)} cookies")
+    print("=" * 50)
+    print("  TikTok DM Streak Automation 🔥")
+    print("=" * 50)
+    print(f"  Target: @{target}")
+    print(f"  Jam kirim: {send_time} (±{offset} menit)")
+    print()
     
-    # Buat session
-    s = get_session(cookies)
-    
-    # Get user info
-    print(f"\n[2] Mencari user: {config['target_username']}...")
-    user = get_user_info(s, config["target_username"])
-    if not user:
-        print(f"[ERROR] User '{config['target_username']}' tidak ditemukan")
-        sys.exit(1)
-    print(f"    User ID: {user['user_id']}")
-    print(f"    Nickname: {user['nickname']}")
-    
-    # Get conversation_id
-    print(f"\n[3] Mencari conversation...")
-    conv_id = get_conversation_id(s, user["user_id"])
-    if not conv_id:
-        print("[ERROR] Tidak bisa membuat/get conversation")
-        sys.exit(1)
-    print(f"    Conversation ID: {conv_id}")
-    
-    def send_once():
-        """Eksekusi sekali kirim."""
-        nonlocal s
-        
-        # Refresh session (cookies mungkin expired)
-        s = get_session(cookies)
-        
-        # Get FYP videos (personalized dari akun sendiri)
-        print(f"\n[4] Mencari video FYP personal...")
-        videos = get_fyp_videos(s, count=20)
-        if not videos:
-            print("[WARN] Tidak dapat video FYP, kirim link FYP")
-            video_url = "https://www.tiktok.com/foryou"
-        else:
-            video = random.choice(videos)
-            video_url = video["url"]
-            print(f"    Video: {video['desc'][:50]}...")
-            print(f"    URL: {video_url}")
-        
-        # Kirim DM (video only, tanpa pesan tambahan)
-        print(f"\n[5] Mengirim video ke DM...")
-        success = send_video_share(s, conv_id, video_url)
-        
-        if success:
-            print("    ✅ Berhasil dikirim!")
-        else:
-            print("    ❌ Gagal mengirim")
-        
-        # Log
-        log_entry = {
-            "timestamp": datetime.now().isoformat(),
-            "target": config["target_username"],
-            "video_url": video_url,
-            "success": success,
-        }
-        with open("send_log.json", "a") as f:
-            f.write(json.dumps(log_entry) + "\n")
-        
-        print(f"\n[6] Log tersimpan ke send_log.json")
-        print("=" * 50)
-    
-    # Tunggu sampai jam target
-    print(f"\n[TUNGGU] Send time: {send_time} (±{offset} menit)")
+    # Tunggu jam target
+    print(f"[1] Menunggu jam kirim...")
     wait_until(send_time, offset)
     
-    # Eksekusi kirim
-    try:
-        send_once()
-    except Exception as e:
-        print(f"[ERROR] {e}")
-
+    print(f"\n[2] Buka browser...")
+    with sync_playwright() as p:
+        browser = get_browser(p)
+        page = browser.pages[0] if browser.pages else browser.new_page()
+        
+        # Login check
+        print(f"[3] Cek login...")
+        if not ensure_logged_in(page):
+            print("[ERROR] Login gagal")
+            browser.close()
+            return
+        
+        # Ambil video FYP
+        print(f"\n[4] Cari video FYP...")
+        video_url = get_fyp_video(page)
+        if not video_url:
+            print("[ERROR] Tidak dapat video FYP")
+            browser.close()
+            return
+        print(f"    Video: {video_url}")
+        
+        # Share ke DM
+        print(f"\n[5] Share ke @{target}...")
+        success = share_video_to_dm(page, video_url, target)
+        
+        # Log
+        log_send(target, video_url, success)
+        
+        if success:
+            print(f"\n[6] ✅ Selesai! Streak terjaga 🔥")
+        else:
+            print(f"\n[6] ⚠️  Gagal kirim, coba manual.")
+        
+        print("=" * 50)
+        
+        # Tutup browser
+        browser.close()
 
 if __name__ == "__main__":
     main()

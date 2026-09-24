@@ -5,19 +5,20 @@ Auto kirim video dari FYP personal ke temen via DM buat maintain streak.
 ## Fitur
 
 - 🎯 Ambil video dari FYP personal (berdasarkan algoritma akun lo)
-- 📩 Kirim video ke temen via DM
+- 📩 Kirim video ke temen via DM TikTok
 - ⏰ Atur jam kirim yang diinginkan
 - 🎲 Random offset biar nggak predicted
+- 🔒 Pakai Playwright (browser automation, lebih aman)
 - 📋 Log otomatis
 
 ## Persiapan
 
-### 1. Export Cookies TikTok
+### 1. Install Dependencies
 
-- Login TikTok di Chrome/Firefox
-- Install extension **[Cookie-Editor](https://chrome.google.com/webstore/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm)**
-- Klik icon Cookie-Editor → Export → JSON
-- Simpan ke file `cookies.json`
+```bash
+pip install playwright
+python3 -m playwright install chromium
+```
 
 ### 2. Edit Config
 
@@ -25,7 +26,7 @@ Buka `config.json`:
 
 ```json
 {
-    "target_username": "username_temen_lo",
+    "target_username": "kemaldinnn",
     "send_time": "09:00",
     "random_offset_minutes": 30
 }
@@ -40,26 +41,43 @@ Buka `config.json`:
 ## Jalankan
 
 ```bash
-pip install requests
 python3 main.py
 ```
 
-## Sumber Video
+### Pertama Kali
 
-Video diambil dari FYP personal akun lo:
+Script akan buka browser TikTok. **Login manual** di browser tersebut, lalu tekan ENTER di terminal. Session akan tersimpan otomatis.
 
-1. Recommend (FYP personalized)
-2. Homefeed
-3. Discover random
-4. Trending (fallback)
+### Setelah Itu
+
+Script buka browser yang sama → session otomatis → cari video FYP → kirim DM → tutup.
+
+## Flow
+
+```
+1. Tunggu sampai jam kirim
+2. Buka browser (session tersimpan)
+3. Cek login status
+4. Ambil video random dari FYP
+5. Share video ke temen via DM
+6. Log hasil
+7. Tutup browser
+```
 
 ## Troubleshooting
 
 | Masalah | Solusi |
 |---------|--------|
-| Cookies tidak ditemukan | Export ulang dari browser |
-| User tidak ditemukan | Cek `target_username` |
-| Send gagal | Cookies expired → export ulang |
+| Browser minta login | Login manual, tekan ENTER |
+| Share gagal | Cek koneksi, coba lagi |
+| Video nggak ketemu | FYP kosong, script retry otomatis |
+
+## Notes
+
+- Pertama kali jalankan, login manual dulu di browser
+- Session tersimpan di folder `browser_data/`
+- Browser tampil (bukan headless) biar bisa login
+- Script ini untuk personal use
 
 ## License
 
