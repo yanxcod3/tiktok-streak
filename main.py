@@ -10,7 +10,6 @@ import random
 import hashlib
 import os
 import sys
-import argparse
 from datetime import datetime, timedelta
 
 import requests
@@ -185,57 +184,60 @@ def get_conversation_id(s: requests.Session, user_id: str) -> str | None:
 
 
 # ============================================================
-# GET TRENDING/FYP VIDEOS
+# GET FYP VIDEOS (personalized dari akun sendiri)
 # ============================================================
 
-def get_trending_videos(s: requests.Session, count: int = 10) -> list[dict]:
-    """Ambil video trending dari TikTok FYP."""
+def get_fyp_videos(s: requests.Session, count: int = 20) -> list[dict]:
+    """Ambil video FYP personal (berdasarkan algoritma akun sendiri)."""
     videos = []
     
+    # Method 1: FYP personalized
     try:
-        # Method 1: Challenge/trending endpoint
         res = s.get(
-            f"{TIKTOK_BASE}/api/challenge/item_list/",
+            f"{TIKTOK_BASE}/api/recommend/item_list/",
             params={
-                "challengeID": "1",  # trending
                 "count": count,
-                "cursor": 0,
+                "from": "tab_fetch",
+                "guide_id": "",
+                "is_non_personalized": "0",
             },
             timeout=15,
         )
         data = res.json()
         if data.get("statusCode") == 0:
             for item in data.get("itemList", []):
+                author = item.get("author", {})
                 videos.append({
                     "id": item.get("id", ""),
                     "desc": item.get("desc", ""),
-                    "author": item.get("author", {}).get("uniqueId", ""),
-                    "url": f"https://www.tiktok.com/@{item.get('author', {}).get('uniqueId', '')}/video/{item.get('id', '')}",
+                    "author": author.get("uniqueId", ""),
+                    "url": f"https://www.tiktok.com/@{author.get('uniqueId', '')}/video/{item.get('id', '')}",
                 })
     except Exception:
         pass
     
-    # Method 2: Generic trending
+    # Method 2: Homefeed (personalized FYP)
     if not videos:
         try:
             res = s.get(
-                f"{TIKTOK_BASE}/api/trending/item_list/",
-                params={"count": count, "cursor": 0},
+                f"{TIKTOK_BASE}/api/home/feed/",
+                params={"count": count},
                 timeout=15,
             )
             data = res.json()
             if data.get("statusCode") == 0:
                 for item in data.get("itemList", []):
+                    author = item.get("author", {})
                     videos.append({
                         "id": item.get("id", ""),
                         "desc": item.get("desc", ""),
-                        "author": item.get("author", {}).get("uniqueId", ""),
-                        "url": f"https://www.tiktok.com/@{item.get('author', {}).get('uniqueId', '')}/video/{item.get('id', '')}",
+                        "author": author.get("uniqueId", ""),
+                        "url": f"https://www.tiktok.com/@{author.get('uniqueId', '')}/video/{item.get('id', '')}",
                     })
         except Exception:
             pass
     
-    # Method 3: Discover page
+    # Method 3: Discover random
     if not videos:
         try:
             res = s.get(
@@ -247,11 +249,33 @@ def get_trending_videos(s: requests.Session, count: int = 10) -> list[dict]:
             if data.get("statusCode") == 0:
                 for item in data.get("data", []):
                     vid = item.get("aweme", item)
+                    author = vid.get("author", {})
                     videos.append({
                         "id": vid.get("id", ""),
                         "desc": vid.get("desc", ""),
-                        "author": vid.get("author", {}).get("unique_id", ""),
-                        "url": f"https://www.tiktok.com/@{vid.get('author', {}).get('unique_id', '')}/video/{vid.get('id', '')}",
+                        "author": author.get("unique_id", ""),
+                        "url": f"https://www.tiktok.com/@{author.get('unique_id', '')}/video/{vid.get('id', '')}",
+                    })
+        except Exception:
+            pass
+    
+    # Method 4: Generic trending (fallback)
+    if not videos:
+        try:
+            res = s.get(
+                f"{TIKTOK_BASE}/api/trending/item_list/",
+                params={"count": count, "cursor": 0},
+                timeout=15,
+            )
+            data = res.json()
+            if data.get("statusCode") == 0:
+                for item in data.get("itemList", []):
+                    author = item.get("author", {})
+                    videos.append({
+                        "id": item.get("id", ""),
+                        "desc": item.get("desc", ""),
+                        "author": author.get("uniqueId", ""),
+                        "url": f"https://www.tiktok.com/@{author.get('uniqueId', '')}/video/{item.get('id', '')}",
                     })
         except Exception:
             pass
@@ -356,11 +380,6 @@ def wait_until(target_time: str, offset_minutes: int = 0):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TikTok DM Streak Automation")
-    parser.add_argument("--loop", action="store_true", help="Jalankan auto loop")
-    parser.add_argument("--once", action="store_true", help="Jalankan sekali saja")
-    args = parser.parse_args()
-    
     print("=" * 50)
     print("  TikTok DM Streak Automation 🔥")
     print("=" * 50)
@@ -403,24 +422,21 @@ def main():
         # Refresh session (cookies mungkin expired)
         s = get_session(cookies)
         
-        # Get trending videos
-        print(f"\n[4] Mencari trending video...")
-        videos = get_trending_videos(s, count=20)
+        # Get FYP videos (personalized dari akun sendiri)
+        print(f"\n[4] Mencari video FYP personal...")
+        videos = get_fyp_videos(s, count=20)
         if not videos:
-            print("[WARN] Tidak dapat trending video, kirim link trending")
-            video_url = "https://www.tiktok.com/trending"
+            print("[WARN] Tidak dapat video FYP, kirim link FYP")
+            video_url = "https://www.tiktok.com/foryou"
         else:
             video = random.choice(videos)
             video_url = video["url"]
             print(f"    Video: {video['desc'][:50]}...")
             print(f"    URL: {video_url}")
         
-        # Kirim DM
-        print(f"\n[5] Mengirim DM...")
-        if config.get("message_template"):
-            success = send_dm(s, conv_id, f"{config['message_template']}\n\n{video_url}")
-        else:
-            success = send_video_share(s, conv_id, video_url)
+        # Kirim DM (video only, tanpa pesan tambahan)
+        print(f"\n[5] Mengirim video ke DM...")
+        success = send_video_share(s, conv_id, video_url)
         
         if success:
             print("    ✅ Berhasil dikirim!")
@@ -440,24 +456,15 @@ def main():
         print(f"\n[6] Log tersimpan ke send_log.json")
         print("=" * 50)
     
-    if args.loop:
-        # Mode loop: tunggu jam target, kirim, ulang
-        print(f"\n[LOOP] Mode auto-loop aktif")
-        print(f"    Send time: {send_time}")
-        print(f"    Random offset: ±{offset} menit")
-        print()
-        
-        while True:
-            wait_until(send_time, offset)
-            try:
-                send_once()
-            except Exception as e:
-                print(f"[ERROR] {e}")
-            print(f"\nMenunggu sampai besok...")
-            time.sleep(60)
-    else:
-        # Mode sekali
+    # Tunggu sampai jam target
+    print(f"\n[TUNGGU] Send time: {send_time} (±{offset} menit)")
+    wait_until(send_time, offset)
+    
+    # Eksekusi kirim
+    try:
         send_once()
+    except Exception as e:
+        print(f"[ERROR] {e}")
 
 
 if __name__ == "__main__":
