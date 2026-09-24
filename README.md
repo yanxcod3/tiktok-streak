@@ -1,12 +1,13 @@
 # TikTok DM Streak Automation 🔥
 
-Auto kirim trending video TikTok ke temen via DM buat maintain streak.
+Auto kirim video FYP ke temen via DM buat maintain streak.
 
 ## Fitur
 
-- 🔍 Auto cari trending video TikTok (FYP)
+- 🎯 Ambil video dari **FYP personal** (berdasarkan algoritma akun lo)
 - 📩 Kirim video ke temen via DM
-- ⏰ Auto loop setiap 24 jam
+- ⏰ Auto tunggu jam kirim yang diatur
+- 🎲 Random offset ±30 menit biar nggak predicted
 - 📋 Log otomatis ke `send_log.json`
 - 🔒 Pakai cookies browser (tidak perlu login ulang)
 
@@ -27,46 +28,49 @@ Buka file `config.json` dan isi:
 ```json
 {
     "target_username": "username_temen_lo",
-    "interval_hours": 24,
-    "message_template": ""
+    "send_time": "09:00",
+    "random_offset_minutes": 30
 }
 ```
 
-| Field | Keterangan |
-|-------|-----------|
-| `target_username` | Username TikTok temen yang mau dikirim |
-| `interval_hours` | Interval pengiriman (default: 24 jam) |
-| `message_template` | Pesanopsional sebelum link video |
+| Field | Keterangan | Default |
+|-------|-----------|---------|
+| `target_username` | Username TikTok temen target | wajib diisi |
+| `send_time` | Jam kirim (format HH:MM) | `09:00` |
+| `random_offset_minutes` | Variasi ±menit biar nggak predicted | `30` |
 
 ## Cara Jalankan
 
 ```bash
-# Install dependencies
+# Install dependency
 pip install requests
 
-# Jalankan sekali
+# Jalankan
 python3 main.py
-
-# Jalankan auto loop (setiap 24 jam)
-python3 main.py --loop
 ```
 
-## Flow
-
-```
+Script akan:
 1. Load cookies dari browser
-2. Cari trending video TikTok (FYP random)
-3. Kirim link video ke temen via DM
-4. Log hasil ke send_log.json
-5. Ulangi setiap 24 jam
-```
+2. Tunggu sampai jam `send_time` (dengan random offset)
+3. Ambil video dari FYP personal akun lo
+4. Kirim video ke temen via DM
+5. Log hasil ke `send_log.json`
+
+## Sumber Video
+
+Script mengambil video dari FYP personal akun lo (bukan trending global):
+
+1. **Recommend** — FYP personalized berdasarkan history
+2. **Homefeed** — Feed utama akun lo
+3. **Discover** — Discover random
+4. **Trending** — Fallback kalau FYP kosong
 
 ## Struktur Folder
 
 ```
 tiktok-streak/
 ├── main.py           # Script utama
-├── config.json       # Konfigurasi target & interval
+├── config.json       # Konfigurasi target & jam kirim
 ├── cookies.json      # Cookies TikTok (export dari browser)
 ├── send_log.json     # Log pengiriman (auto-generated)
 └── README.md
@@ -79,14 +83,14 @@ tiktok-streak/
 | `File cookies tidak ditemukan` | Export ulang cookies dari browser |
 | `User tidak ditemukan` | Cek username di `config.json` |
 | `Send gagal` | Cookies expired → export ulang |
-| `Tidak ada trending video` | Coba lagi nanti / cek koneksi |
+| `Tidak ada video FYP` | Fallback ke trending otomatis |
 
 ## Notes
 
 - Cookies TikTok expire dalam 1-4 minggu
 - Kalau logout dari browser, cookies hangus
 - Export ulang cookies kalau script error
-- Script ini untuk personal use, jangan spam
+- Script ini untuk personal use
 
 ## License
 
